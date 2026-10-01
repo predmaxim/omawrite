@@ -53,6 +53,7 @@ private:
     QTextCharFormat m_boldFormat;
     QTextCharFormat m_italicFormat;
     QTextCharFormat m_strikeFormat;
+    QTextCharFormat m_checkboxFormat;
     QTextCharFormat m_codeFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;

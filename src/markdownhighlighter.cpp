@@ -98,6 +98,10 @@ void MarkdownHighlighter::rebuildFormats() {
     m_italicFormat.setFontItalic(true);
     m_italicFormat.setForeground(text);
 
+    m_checkboxFormat = QTextCharFormat();
+    m_checkboxFormat.setForeground(link);
+    m_checkboxFormat.setFontWeight(QFont::Bold);
+
     m_strikeFormat = QTextCharFormat();
     m_strikeFormat.setFontStrikeOut(true);
     m_strikeFormat.setForeground(marker);
@@ -195,10 +199,17 @@ void MarkdownHighlighter::highlightMarkers(const QString &text, const QTextCharF
     if (firstChar == QLatin1Char('-') || firstChar == QLatin1Char('+')
             || firstChar == QLatin1Char('*') || firstChar.isDigit()) {
         static const QRegularExpression listRe(
-            QStringLiteral("^(\\s*(?:[-+*]|\\d+[.)])\\s+)(.*)$"));
+            QStringLiteral("^(\\s*(?:[-+*]|\\d+[.)])\\s+)(\\[[ xX]\\](?=\\s|$))?(.*)$"));
         const QRegularExpressionMatch list = listRe.match(text);
-        if (list.hasMatch())
+        if (list.hasMatch()) {
             setFormat(0, list.capturedLength(1), m_markerFormat);
+            // Task list: the box takes the accent; a done item is struck through.
+            if (list.capturedLength(2)) {
+                setFormat(list.capturedStart(2), 3, m_checkboxFormat);
+                if (list.captured(2) != QLatin1String("[ ]"))
+                    setFormat(list.capturedStart(3), list.capturedLength(3), m_strikeFormat);
+            }
+        }
     }
 
     if (firstChar == QLatin1Char('-') || firstChar == QLatin1Char('*')
@@ -219,7 +230,15 @@ void MarkdownHighlighter::highlightInline(const QString &text, const QTextCharFo
             : item.kind == InlineKind::Strike ? m_strikeFormat
             : item.kind == InlineKind::Code ? m_codeFormat
                                             : m_linkFormat;
-        setFormat(item.content.start, item.content.length, contentFormat);
+        // Merge so nested spans keep both styles (code in a link, bold in a done task).
+        for (int i = item.content.start; i < item.content.start + item.content.length; ++i) {
+            QTextCharFormat merged = format(i);
+            merged.merge(contentFormat);
+            setFormat(i, 1, merged);
+        }
+    }
+    // Markers last: a later span's content must not re-show an earlier span's markers.
+    for (const InlineMarkup &item : markup) {
         for (const Span &marker : item.markers)
             setFormat(marker.start, marker.length, hidden);
     }
