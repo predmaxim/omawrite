@@ -177,7 +177,7 @@ void Backend::attachDocument(QObject *textDocument) {
         delete m_highlighter.data();
 
     m_document = quickDocument->textDocument();
-    m_lastDocumentText = m_document->toPlainText();
+    m_lastDocumentText = currentDocumentText();
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setDarkMode(m_darkMode);
     m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
@@ -665,7 +665,13 @@ QUrl Backend::suggestedSaveUrl() const {
 }
 
 QString Backend::currentDocumentText() const {
-    return m_document ? m_document->toPlainText() : QString();
+    // toPlainText() turns non-breaking spaces into plain ones, which would mark
+    // a just-opened file modified and rewrite them on save. Raw text keeps them.
+    if (!m_document)
+        return QString();
+    QString text = m_document->toRawText();
+    text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+    return text;
 }
 
 int Backend::countWords(const QString &text) {

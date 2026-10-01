@@ -272,6 +272,25 @@ private slots:
         QVERIFY(!backend.property("modified").toBool());
     }
 
+    void opensFilesWithNonBreakingSpacesUnmodified() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath(QStringLiteral("nbsp.md"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QStringLiteral("a\u00A0b\n").toUtf8());
+        file.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        backend.open(QUrl::fromLocalFile(path));
+        QVERIFY(!backend.editorTextChanged() || !backend.property("modified").toBool());
+        QVERIFY(!backend.property("modified").toBool());
+    }
+
     void remembersLastSaveDirectory() {
         QTemporaryDir saveDirectory;
         QVERIFY(saveDirectory.isValid());
