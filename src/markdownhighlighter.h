@@ -1,8 +1,9 @@
 #pragma once
 
-#include <QRegularExpression>
+#include <QHash>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
+#include <QVariantList>
 
 class MarkdownHighlighter : public QSyntaxHighlighter {
     Q_OBJECT
@@ -15,35 +16,45 @@ public:
     void setSearch(const QString &query, int currentMatchStart);
     // The block holding the caret shows its raw markdown; all others render.
     void setActiveBlock(int blockNumber);
+    // Task boxes as {pos: offset of "[", done: bool}, for the editor to draw.
+    QVariantList tasks() const { return m_tasks; }
 
-    struct Span {
+    enum class Role { Hide, Dim, Plain, Bold, Italic, Strike, Code, Quote, Link, Image, Html,
+                      Done, Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 };
+    struct Run {
         int start;
         int length;
+        Role role;
+        bool operator==(const Run &) const = default;
     };
-
-    enum class InlineKind { Bold, Italic, Strike, Code, Link };
-
-    struct InlineMarkup {
-        InlineKind kind;
-        Span content;
-        Span markers[2];
+    struct Task {
+        int pos;
+        bool done;
     };
+    struct Parsed {
+        QList<Run> runs;  // document offsets
+        QList<Task> tasks;
+    };
+    // md4c does the parsing; this classifies every character for styling.
+    static Parsed parse(const QString &text);
 
-    // Inline markdown spans: content to style and markers to hide off the
-    // active line.
-    static QList<InlineMarkup> inlineMarkup(const QString &text);
+signals:
+    void tasksChanged();
 
 protected:
     void highlightBlock(const QString &text) override;
 
 private:
     void rebuildFormats();
-    void highlightMarkers(const QString &text, const QTextCharFormat &hidden);
-    void highlightInline(const QString &text, const QTextCharFormat &hidden);
+    void ensureParsed();
+    QTextCharFormat headingFormat(int level) const;
     void highlightSearch(const QString &text);
 
     bool m_darkMode = true;
     int m_activeBlock = -1;
+    int m_parsedRevision = -1;
+    QHash<int, QList<Run>> m_blockRuns;
+    QVariantList m_tasks;
     QString m_customBackground;
     QString m_customForeground;
     QString m_customAccent;

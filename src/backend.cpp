@@ -181,6 +181,7 @@ void Backend::attachDocument(QObject *textDocument) {
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setDarkMode(m_darkMode);
     m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
+    connect(m_highlighter, &MarkdownHighlighter::tasksChanged, this, &Backend::taskBoxesChanged);
 
     connect(m_document, &QTextDocument::contentsChange, this,
             [this](int position, int, int charsAdded) {
@@ -220,6 +221,7 @@ void Backend::open(const QUrl &url) {
     watchCurrentFile();
     setModified(false);
     setStatus(QStringLiteral("Opened %1").arg(fileName()));
+    emit fileOpened();
 }
 
 void Backend::save() {
@@ -355,15 +357,27 @@ bool Backend::editorTextChanged() {
     }
 
     scheduleWordCount();
-    setModified(true);
-    setStatus(QStringLiteral("Unsaved"));
-    scheduleRecovery();
+    // Undoing back to the saved text (or to an empty new draft) is not a change.
+    const bool modified = m_hasKnownFileContents ? text.toUtf8() != m_lastKnownFileContents
+                                                 : !text.isEmpty();
+    setModified(modified);
+    if (modified) {
+        setStatus(QStringLiteral("Unsaved"));
+        scheduleRecovery();
+    } else {
+        setStatus(QString());
+        clearRecovery();
+    }
     return true;
 }
 
 void Backend::setCursorPosition(int position) {
     if (m_document && m_highlighter)
         m_highlighter->setActiveBlock(m_document->findBlock(position).blockNumber());
+}
+
+QVariantList Backend::taskBoxes() const {
+    return m_highlighter ? m_highlighter->tasks() : QVariantList();
 }
 
 void Backend::setSearchHighlight(const QString &query, int currentMatchStart) {

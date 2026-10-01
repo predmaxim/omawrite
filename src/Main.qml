@@ -240,6 +240,12 @@ ApplicationWindow {
     Connections {
         target: backend
 
+        // Loading leaves the caret at the end; start at the top instead.
+        function onFileOpened() {
+            editor.cursorPosition = 0;
+            editorFlick.contentY = 0;
+        }
+
         function onOpenDialogRequested() {
             openFileDialog.open();
         }
@@ -669,6 +675,81 @@ ApplicationWindow {
                         replaceSelectionWith(pastedText);
                 }
 
+                // Flip the task box on the caret's line (Ctrl+Enter), or the one at
+                // box (a click). Edits in place so the caret and view stay put.
+                function toggleTask(position, box) {
+                    var boxes = backend.taskBoxes;
+                    var lineStart = text.lastIndexOf("\n", position - 1) + 1;
+                    var lineEnd = text.indexOf("\n", position);
+                    if (lineEnd < 0)
+                        lineEnd = text.length;
+                    for (var i = 0; i < boxes.length; i++) {
+                        var pos = boxes[i].pos;
+                        if (box ? pos === position : pos >= lineStart && pos < lineEnd) {
+                            var mark = boxes[i].done ? " " : "x";  // remove() reparses and replaces boxes
+                            remove(pos + 1, pos + 2);
+                            insert(pos + 1, mark);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                // A drawn box covers "[ ]" / "[x]" off the caret's line; click toggles.
+                Repeater {
+                    model: backend.taskBoxes
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property rect start: {
+                            editor.width; editor.contentHeight;
+                            return editor.positionToRectangle(modelData.pos);
+                        }
+                        readonly property rect end: {
+                            editor.width; editor.contentHeight;
+                            return editor.positionToRectangle(modelData.pos + 3);
+                        }
+                        readonly property bool onCaretLine: {
+                            var lineStart = editor.text.lastIndexOf("\n", modelData.pos) + 1;
+                            var lineEnd = editor.text.indexOf("\n", modelData.pos);
+                            var caret = editor.cursorPosition;
+                            return caret >= lineStart && (lineEnd < 0 || caret <= lineEnd);
+                        }
+                        readonly property color accent: backend.themeAccent !== ""
+                            ? backend.themeAccent : (win.darkMode ? "#5584aa" : "#2077b2")
+                        visible: !onCaretLine && start.y === end.y
+                        x: start.x
+                        y: start.y
+                        width: end.x - start.x
+                        height: start.height
+                        color: win.pageColor
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: Math.round(parent.height * 0.6)
+                            height: width
+                            radius: Math.max(2, width / 5)
+                            color: modelData.done ? parent.accent : "transparent"
+                            border.width: Math.max(1, Math.round(width / 10))
+                            border.color: parent.accent
+
+                            Text {
+                                anchors.centerIn: parent
+                                visible: modelData.done
+                                text: "\u2713"
+                                color: win.pageColor
+                                font.pixelSize: parent.width * 0.85
+                                font.bold: true
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: editor.toggleTask(modelData.pos, true)
+                        }
+                    }
+                }
+
                 function movePage(direction, extendSelection) {
                     var pageStep = Math.max(win.editorFontPixelSize,
                                             editorFlick.height - win.editorFontPixelSize * 2);
@@ -711,7 +792,10 @@ ApplicationWindow {
 
                     var returnKey = event.key === Qt.Key_Return || event.key === Qt.Key_Enter;
                     var commandModifier = event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
-                    if (returnKey && !commandModifier) {
+                    if (returnKey && (event.modifiers & Qt.ControlModifier)
+                            && toggleTask(cursorPosition, false)) {
+                        event.accepted = true;
+                    } else if (returnKey && !commandModifier) {
                         smartReturn(event.modifiers & Qt.ShiftModifier);
                         event.accepted = true;
                     } else if (!commandModifier && event.key === Qt.Key_Backspace

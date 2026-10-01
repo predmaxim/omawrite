@@ -1,6 +1,6 @@
 QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2 dbus
 
-CONFIG += c++17 release
+CONFIG += c++20 release
 TARGET = omawrite
 TEMPLATE = app
 
@@ -16,3 +16,4 @@ SOURCES += \
     src/systemtheme.cpp
 
 RESOURCES += src/resources.qrc
+LIBS += -lmd4c
