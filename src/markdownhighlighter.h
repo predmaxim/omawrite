@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QHash>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
@@ -20,11 +21,12 @@ public:
     QVariantList tasks() const { return m_tasks; }
 
     enum class Role { Hide, Dim, Plain, Bold, Italic, Strike, Code, Quote, Link, Image, Html,
-                      Done, Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 };
+                      Done, Syntax, Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 };
     struct Run {
         int start;
         int length;
         Role role;
+        QColor color = {};  // Syntax only: the code token's color
         bool operator==(const Run &) const = default;
     };
     struct Task {

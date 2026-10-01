@@ -4,9 +4,14 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QTextBlock>
+#include <QTextLayout>
+
+#include <optional>
 #include <QTextDocument>
 
 #include <md4c.h>
+
+#include "qsourcehighlite/qsourcehighliter.h"
 
 MarkdownHighlighter::MarkdownHighlighter(QTextDocument *document)
     : QSyntaxHighlighter(document) {
@@ -144,7 +149,48 @@ struct Open {
     int first = -1;  // first and end of text seen inside, in QString offsets
     int end = -1;
     int level = 0;   // heading level / fence char / task state
+    QString lang;    // code block info string's first word
 };
+
+struct CodeBlock {
+    int start;
+    int end;
+    QString lang;
+};
+
+// Fence language names to QSourceHighlite languages.
+std::optional<QSourceHighlite::QSourceHighliter::Language> codeLanguage(const QString &name) {
+    using L = QSourceHighlite::QSourceHighliter;
+    static const QHash<QString, L::Language> languages{
+        {QStringLiteral("asm"), L::CodeAsm}, {QStringLiteral("bash"), L::CodeBash},
+        {QStringLiteral("sh"), L::CodeBash}, {QStringLiteral("shell"), L::CodeBash},
+        {QStringLiteral("zsh"), L::CodeBash}, {QStringLiteral("c"), L::CodeC},
+        {QStringLiteral("cpp"), L::CodeCpp}, {QStringLiteral("c++"), L::CodeCpp},
+        {QStringLiteral("cc"), L::CodeCpp}, {QStringLiteral("h"), L::CodeCpp},
+        {QStringLiteral("hpp"), L::CodeCpp}, {QStringLiteral("cmake"), L::CodeCMake},
+        {QStringLiteral("cs"), L::CodeCSharp}, {QStringLiteral("csharp"), L::CodeCSharp},
+        {QStringLiteral("css"), L::CodeCSS}, {QStringLiteral("go"), L::CodeGo},
+        {QStringLiteral("golang"), L::CodeGo}, {QStringLiteral("html"), L::CodeXML},
+        {QStringLiteral("xml"), L::CodeXML}, {QStringLiteral("svg"), L::CodeXML},
+        {QStringLiteral("ini"), L::CodeINI}, {QStringLiteral("toml"), L::CodeINI},
+        {QStringLiteral("conf"), L::CodeINI}, {QStringLiteral("java"), L::CodeJava},
+        {QStringLiteral("js"), L::CodeJs}, {QStringLiteral("javascript"), L::CodeJs},
+        {QStringLiteral("jsx"), L::CodeJs}, {QStringLiteral("mjs"), L::CodeJs},
+        {QStringLiteral("ts"), L::CodeTypeScript}, {QStringLiteral("typescript"), L::CodeTypeScript},
+        {QStringLiteral("tsx"), L::CodeTypeScript}, {QStringLiteral("json"), L::CodeJSON},
+        {QStringLiteral("lua"), L::CodeLua}, {QStringLiteral("make"), L::CodeMake},
+        {QStringLiteral("makefile"), L::CodeMake}, {QStringLiteral("php"), L::CodePHP},
+        {QStringLiteral("py"), L::CodePython}, {QStringLiteral("python"), L::CodePython},
+        {QStringLiteral("qml"), L::CodeQML}, {QStringLiteral("rs"), L::CodeRust},
+        {QStringLiteral("rust"), L::CodeRust}, {QStringLiteral("sql"), L::CodeSQL},
+        {QStringLiteral("v"), L::CodeV}, {QStringLiteral("yaml"), L::CodeYAML},
+        {QStringLiteral("yml"), L::CodeYAML},
+    };
+    const auto it = languages.constFind(name.toLower());
+    if (it == languages.cend())
+        return std::nullopt;
+    return *it;
+}
 
 struct Parser {
     QString text;
@@ -152,6 +198,7 @@ struct Parser {
     std::vector<int> charAt;  // UTF-8 byte offset -> QString offset
     QList<Open> blocks;
     QList<Open> spans;
+    QList<CodeBlock> codeBlocks;
     MarkdownHighlighter::Parsed out;
 
     int lineStart(int pos) const { return text.lastIndexOf(QLatin1Char('\n'), pos - 1) + 1; }
@@ -289,6 +336,7 @@ struct Parser {
             break;
         }
         case MD_BLOCK_CODE:
+            codeBlocks.append({b.first, b.end, b.lang});
             if (b.level) {  // fenced: dim the fence lines around the content
                 const int open = lineStart(b.first) - 1;
                 if (open > 0) add(lineStart(open - 1 < 0 ? 0 : open), open, Role::Dim);
@@ -340,8 +388,11 @@ MarkdownHighlighter::Parsed MarkdownHighlighter::parse(const QString &text) {
         Open o{type};
         if (type == MD_BLOCK_H)
             o.level = int(static_cast<MD_BLOCK_H_DETAIL *>(detail)->level);
-        else if (type == MD_BLOCK_CODE)
-            o.level = static_cast<MD_BLOCK_CODE_DETAIL *>(detail)->fence_char;
+        else if (type == MD_BLOCK_CODE) {
+            const auto *code = static_cast<MD_BLOCK_CODE_DETAIL *>(detail);
+            o.level = code->fence_char;
+            o.lang = QString::fromUtf8(code->lang.text, code->lang.size);
+        }
         else if (type == MD_BLOCK_LI) {
             const auto *li = static_cast<MD_BLOCK_LI_DETAIL *>(detail);
             if (li->is_task) {
@@ -374,6 +425,26 @@ MarkdownHighlighter::Parsed MarkdownHighlighter::parse(const QString &text) {
     };
     md_parse(p.utf8.constData(), MD_SIZE(p.utf8.size()), &parser, &p);
 
+    // Code colors: run each tagged block through QSourceHighlite in a scratch
+    // document and copy the colors it set.
+    for (const CodeBlock &code : p.codeBlocks) {
+        const auto language = codeLanguage(code.lang);
+        if (!language)
+            continue;
+        QTextDocument scratch;
+        QSourceHighlite::QSourceHighliter colors(&scratch);
+        colors.setCurrentLanguage(*language);
+        scratch.setPlainText(text.mid(code.start, code.end - code.start));
+        colors.rehighlight();
+        for (QTextBlock block = scratch.begin(); block.isValid(); block = block.next()) {
+            for (const QTextLayout::FormatRange &range : block.layout()->formats()) {
+                if (range.format.hasProperty(QTextFormat::ForegroundBrush))
+                    p.out.runs.append({code.start + block.position() + range.start, range.length,
+                                       Role::Syntax, range.format.foreground().color()});
+            }
+        }
+    }
+
     // Paint order: block-wide dims first, then content, then done-task dimming
     // over bold/links, hidden syntax last so nothing re-shows it.
     std::stable_sort(p.out.runs.begin(), p.out.runs.end(), [](const Run &a, const Run &b) {
@@ -399,7 +470,7 @@ void MarkdownHighlighter::ensureParsed() {
             const int start = qMax(run.start, block.position());
             const int end = qMin(run.start + run.length, block.position() + block.length() - 1);
             if (end > start)
-                byBlock[block.blockNumber()].append({start - block.position(), end - start, run.role});
+                byBlock[block.blockNumber()].append({start - block.position(), end - start, run.role, run.color});
         }
     }
     // An edit can restyle other blocks (opening a fence, adding "==="); the
@@ -441,6 +512,7 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
         case Role::Italic: style = m_italicFormat; break;
         case Role::Strike: style = m_strikeFormat; break;
         case Role::Code: style = m_codeFormat; break;
+        case Role::Syntax: style.setForeground(run.color); break;
         case Role::Quote: style = m_quoteFormat; break;
         case Role::Link: style = m_linkFormat; break;
         case Role::Image:

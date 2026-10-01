@@ -17,3 +17,6 @@ SOURCES += \
 
 RESOURCES += src/resources.qrc
 LIBS += -lmd4c
+
+HEADERS += src/qsourcehighlite/qsourcehighliter.h src/qsourcehighlite/languagedata.h src/qsourcehighlite/qsourcehighliterthemes.h
+SOURCES += src/qsourcehighlite/qsourcehighliter.cpp src/qsourcehighlite/languagedata.cpp src/qsourcehighlite/qsourcehighliterthemes.cpp
