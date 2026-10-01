@@ -68,6 +68,9 @@ private slots:
         QCOMPARE(roles(QStringLiteral("Title\n===\n"), R::Heading1), QStringLiteral("Title"));
         QCOMPARE(roles(QStringLiteral("Title\n===\n"), R::Hide), QStringLiteral("==="));
         QCOMPARE(roles(QStringLiteral("```\nx **y**\n```\n"), R::Code), QStringLiteral("x **y**"));
+        QCOMPARE(roles(QStringLiteral("```js\nconst a = 1; // c\n```\n"), R::Syntax).trimmed(),
+                 QStringLiteral("const1// c"));
+        QVERIFY(roles(QStringLiteral("```nope\nconst a\n```\n"), R::Syntax).isEmpty());
         QCOMPARE(roles(QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n"), R::Bold), QStringLiteral("ab"));
 
         const auto parsed = MarkdownHighlighter::parse(QStringLiteral("- [ ] open\n- [x] done **b**\n"));

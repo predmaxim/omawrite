@@ -1,0 +1,2 @@
+QSourceHighlite (MIT), vendored unchanged from https://github.com/Waqar144/QSourceHighlite at d78f0d4.
+Colors code inside fenced blocks; see MarkdownHighlighter::parse.
