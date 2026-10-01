@@ -44,25 +44,38 @@ private slots:
                  QStringLiteral("Already.md"));
     }
 
-    void findsInlineMarkdownRanges() {
-        const auto markup = MarkdownHighlighter::inlineMarkup(
-            QStringLiteral("**bold** and *italic* and [site](https://example.com)"));
-        QCOMPARE(markup.size(), 3);
-        QCOMPARE(markup.at(0).content.start, 2);
-        QCOMPARE(markup.at(0).content.length, 4);
-        QCOMPARE(markup.at(2).content.length, 4);
-        QCOMPARE(markup.at(2).markers[0].length, 1);
+    static QString roles(const QString &text, MarkdownHighlighter::Role role) {
+        // The characters given a role, in order, for compact assertions.
+        QString out;
+        QList<bool> hit(text.size(), false);
+        for (const auto &run : MarkdownHighlighter::parse(text).runs)
+            if (run.role == role)
+                for (int i = run.start; i < run.start + run.length; ++i) hit[i] = true;
+        for (int i = 0; i < text.size(); ++i)
+            if (hit[i]) out += text.at(i);
+        return out;
     }
 
-    void findsCodeAndStrikeRanges() {
-        const auto markup = MarkdownHighlighter::inlineMarkup(
-            QStringLiteral("`code` and ~~gone~~"));
-        QCOMPARE(markup.size(), 2);
-        QCOMPARE(markup.at(0).kind, MarkdownHighlighter::InlineKind::Code);
-        QCOMPARE(markup.at(0).content.start, 1);
-        QCOMPARE(markup.at(1).kind, MarkdownHighlighter::InlineKind::Strike);
-        QCOMPARE(markup.at(1).content.length, 4);
-        QCOMPARE(markup.at(1).markers[1].start, 17);
+    void parsesMarkdownWithMd4c() {
+        using R = MarkdownHighlighter::Role;
+        const QString inline_ = QStringLiteral("**b** *i* ~~s~~ `c_d` [l](u) ***bi*** a_b_c");
+        QCOMPARE(roles(inline_, R::Hide), QStringLiteral("******~~~~``[](u)******"));
+        QCOMPARE(roles(inline_, R::Italic), QStringLiteral("ibi"));
+        QCOMPARE(roles(inline_, R::Code), QStringLiteral("c_d"));
+        QCOMPARE(roles(inline_, R::Link), QStringLiteral("l"));
+
+        QCOMPARE(roles(QStringLiteral("  ### Title ##"), R::Hide), QStringLiteral("  ###  ##"));
+        QCOMPARE(roles(QStringLiteral("Title\n===\n"), R::Heading1), QStringLiteral("Title"));
+        QCOMPARE(roles(QStringLiteral("Title\n===\n"), R::Hide), QStringLiteral("==="));
+        QCOMPARE(roles(QStringLiteral("```\nx **y**\n```\n"), R::Code), QStringLiteral("x **y**"));
+        QCOMPARE(roles(QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n"), R::Bold), QStringLiteral("ab"));
+
+        const auto parsed = MarkdownHighlighter::parse(QStringLiteral("- [ ] open\n- [x] done **b**\n"));
+        QCOMPARE(parsed.tasks.size(), 2);
+        QCOMPARE(parsed.tasks.at(0).pos, 2);
+        QVERIFY(parsed.tasks.at(1).done);
+        QCOMPARE(roles(QStringLiteral("- [ ] open\n- [x] done **b**\n"), R::Done), QStringLiteral("done b"));
+        QCOMPARE(roles(QStringLiteral("Привет **мир**"), R::Bold), QStringLiteral("мир"));
     }
 
     void loadsCurrentOmarchyTheme() {
@@ -227,6 +240,33 @@ private slots:
         backend.setTextScale(9.0 / 12.0);
         QCOMPARE(window->property("editorFontPixelSize").toInt(), 15);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 15);
+    }
+
+    void togglesTasksAndForgetsUndoneEdits() {
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+
+        editor->setProperty("text", QStringLiteral("intro\n\n- [ ] task"));
+        QTRY_COMPARE(backend.taskBoxes().size(), 1);
+        QVariant toggled;
+        QMetaObject::invokeMethod(editor, "toggleTask", Q_RETURN_ARG(QVariant, toggled),
+                                  Q_ARG(QVariant, 12), Q_ARG(QVariant, false));
+        QVERIFY(toggled.toBool());
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("intro\n\n- [x] task"));
+        // A click that isn't on a box does nothing.
+        QMetaObject::invokeMethod(editor, "toggleTask", Q_RETURN_ARG(QVariant, toggled),
+                                  Q_ARG(QVariant, 3), Q_ARG(QVariant, true));
+        QVERIFY(!toggled.toBool());
+        QVERIFY(backend.property("modified").toBool());
+
+        editor->setProperty("text", QString());
+        QVERIFY(!backend.property("modified").toBool());
     }
 
     void remembersLastSaveDirectory() {
