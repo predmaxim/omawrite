@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QTextBlock>
 #include <QTextDocument>
 
 MarkdownHighlighter::MarkdownHighlighter(QTextDocument *document)
@@ -38,6 +39,20 @@ void MarkdownHighlighter::setSearch(const QString &query, int currentMatchStart)
     m_searchQuery = query;
     m_currentMatchStart = currentMatchStart;
     rehighlight();
+}
+
+void MarkdownHighlighter::setActiveBlock(int blockNumber) {
+    if (m_activeBlock == blockNumber)
+        return;
+    const int previous = m_activeBlock;
+    m_activeBlock = blockNumber;
+    if (!document())
+        return;
+    for (const int number : {previous, blockNumber}) {
+        const QTextBlock block = document()->findBlockByNumber(number);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }
 }
 
 void MarkdownHighlighter::rebuildFormats() {
@@ -83,6 +98,10 @@ void MarkdownHighlighter::rebuildFormats() {
     m_italicFormat.setFontItalic(true);
     m_italicFormat.setForeground(text);
 
+    m_strikeFormat = QTextCharFormat();
+    m_strikeFormat.setFontStrikeOut(true);
+    m_strikeFormat.setForeground(marker);
+
     m_codeFormat = QTextCharFormat();
     m_codeFormat.setForeground(text);
     m_codeFormat.setBackground(codeBackground);
@@ -104,12 +123,22 @@ void MarkdownHighlighter::rebuildFormats() {
 }
 
 void MarkdownHighlighter::highlightBlock(const QString &text) {
+    // Block state 1 = inside a ``` fence.
+    static const QRegularExpression fenceRe(QStringLiteral("^\\s*(```|~~~)"));
+    const bool inFence = previousBlockState() == 1;
+    const bool isFence = fenceRe.match(text).hasMatch();
+    setCurrentBlockState(inFence != isFence ? 1 : 0);
+    if (inFence || isFence) {
+        setFormat(0, text.length(), isFence ? m_markerFormat : m_codeFormat);
+        highlightSearch(text);
+        return;
+    }
+
+    const QTextCharFormat &hidden = currentBlock().blockNumber() == m_activeBlock
+        ? m_markerFormat : m_hiddenMarkerFormat;
     if (!text.isEmpty()) {
-        highlightMarkers(text);
-        if (text.contains(QLatin1Char('`')) || text.contains(QLatin1Char('*'))
-            || text.contains(QLatin1Char('_')) || text.contains(QLatin1Char('['))) {
-            highlightInline(text);
-        }
+        highlightMarkers(text, hidden);
+        highlightInline(text, hidden);
     }
     highlightSearch(text);
 }
@@ -130,7 +159,7 @@ void MarkdownHighlighter::highlightSearch(const QString &text) {
     }
 }
 
-void MarkdownHighlighter::highlightMarkers(const QString &text) {
+void MarkdownHighlighter::highlightMarkers(const QString &text, const QTextCharFormat &hidden) {
     int first = 0;
     while (first < text.length() && text.at(first).isSpace())
         ++first;
@@ -142,10 +171,14 @@ void MarkdownHighlighter::highlightMarkers(const QString &text) {
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
         const QRegularExpressionMatch heading = headingRe.match(text);
         if (heading.hasMatch()) {
-            setFormat(0, heading.capturedLength(1) + heading.capturedLength(2),
-                      m_markerFormat);
-            setFormat(heading.capturedStart(3), heading.capturedLength(3),
-                      m_headingFormat);
+            setFormat(0, heading.capturedLength(1) + heading.capturedLength(2), hidden);
+            static const qreal scale[] = {1.6, 1.35, 1.15, 1.0, 1.0, 1.0};
+            QTextCharFormat format = m_headingFormat;
+            const int basePixels = document()->defaultFont().pixelSize();
+            if (basePixels > 0)
+                format.setProperty(QTextFormat::FontPixelSize,
+                                   qRound(basePixels * scale[heading.capturedLength(1) - 1]));
+            setFormat(heading.capturedStart(3), heading.capturedLength(3), format);
             return;
         }
     }
@@ -177,38 +210,46 @@ void MarkdownHighlighter::highlightMarkers(const QString &text) {
     }
 }
 
-void MarkdownHighlighter::highlightInline(const QString &text) {
-    if (text.contains(QLatin1Char('`'))) {
-        static const QRegularExpression codeRe(QStringLiteral("`([^`]+)`"));
-        QRegularExpressionMatchIterator codeMatches = codeRe.globalMatch(text);
-        while (codeMatches.hasNext()) {
-            const QRegularExpressionMatch match = codeMatches.next();
-            setFormat(match.capturedStart(0), match.capturedLength(0), m_codeFormat);
-        }
-    }
-
+void MarkdownHighlighter::highlightInline(const QString &text, const QTextCharFormat &hidden) {
     const QList<InlineMarkup> markup = inlineMarkup(text);
     for (const InlineMarkup &item : markup) {
         const QTextCharFormat &contentFormat =
             item.kind == InlineKind::Bold ? m_boldFormat
             : item.kind == InlineKind::Italic ? m_italicFormat
-                                              : m_linkFormat;
+            : item.kind == InlineKind::Strike ? m_strikeFormat
+            : item.kind == InlineKind::Code ? m_codeFormat
+                                            : m_linkFormat;
         setFormat(item.content.start, item.content.length, contentFormat);
         for (const Span &marker : item.markers)
-            setFormat(marker.start, marker.length, m_hiddenMarkerFormat);
+            setFormat(marker.start, marker.length, hidden);
     }
 }
 
 QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const QString &text) {
     QList<InlineMarkup> markup;
     if (!text.contains(QLatin1Char('*')) && !text.contains(QLatin1Char('_'))
-            && !text.contains(QLatin1Char('['))) {
+            && !text.contains(QLatin1Char('[')) && !text.contains(QLatin1Char('~'))
+            && !text.contains(QLatin1Char('`'))) {
         return markup;
     }
 
     const auto span = [](const QRegularExpressionMatch &match, int group) {
         return Span{int(match.capturedStart(group)), int(match.capturedLength(group))};
     };
+
+    static const QRegularExpression codeRe(QStringLiteral("(`)([^`]+)(`)"));
+    QRegularExpressionMatchIterator codeMatches = codeRe.globalMatch(text);
+    while (codeMatches.hasNext()) {
+        const QRegularExpressionMatch match = codeMatches.next();
+        markup.append({InlineKind::Code, span(match, 2), {span(match, 1), span(match, 3)}});
+    }
+
+    static const QRegularExpression strikeRe(QStringLiteral("(~~)(.+?)(~~)"));
+    QRegularExpressionMatchIterator strikeMatches = strikeRe.globalMatch(text);
+    while (strikeMatches.hasNext()) {
+        const QRegularExpressionMatch match = strikeMatches.next();
+        markup.append({InlineKind::Strike, span(match, 2), {span(match, 1), span(match, 3)}});
+    }
 
     static const QRegularExpression boldRe(QStringLiteral("(\\*\\*|__)(.+?)(\\1)"));
     QRegularExpressionMatchIterator boldMatches = boldRe.globalMatch(text);

@@ -54,6 +54,17 @@ private slots:
         QCOMPARE(markup.at(2).markers[0].length, 1);
     }
 
+    void findsCodeAndStrikeRanges() {
+        const auto markup = MarkdownHighlighter::inlineMarkup(
+            QStringLiteral("`code` and ~~gone~~"));
+        QCOMPARE(markup.size(), 2);
+        QCOMPARE(markup.at(0).kind, MarkdownHighlighter::InlineKind::Code);
+        QCOMPARE(markup.at(0).content.start, 1);
+        QCOMPARE(markup.at(1).kind, MarkdownHighlighter::InlineKind::Strike);
+        QCOMPARE(markup.at(1).content.length, 4);
+        QCOMPARE(markup.at(1).markers[1].start, 17);
+    }
+
     void loadsCurrentOmarchyTheme() {
         QTemporaryDir homeDirectory;
         QVERIFY(homeDirectory.isValid());
