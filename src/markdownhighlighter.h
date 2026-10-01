@@ -13,13 +13,15 @@ public:
     void setDarkMode(bool darkMode);
     void setColors(const QString &background, const QString &foreground, const QString &accent);
     void setSearch(const QString &query, int currentMatchStart);
+    // The block holding the caret shows its raw markdown; all others render.
+    void setActiveBlock(int blockNumber);
 
     struct Span {
         int start;
         int length;
     };
 
-    enum class InlineKind { Bold, Italic, Link };
+    enum class InlineKind { Bold, Italic, Strike, Code, Link };
 
     struct InlineMarkup {
         InlineKind kind;
@@ -27,9 +29,8 @@ public:
         Span markers[2];
     };
 
-    // Single source of truth for inline markdown spans: the highlighter uses it
-    // to style content and hide markers, and the editor uses it (via
-    // Backend::hiddenRangesAt) to skip the caret over the hidden markers.
+    // Inline markdown spans: content to style and markers to hide off the
+    // active line.
     static QList<InlineMarkup> inlineMarkup(const QString &text);
 
 protected:
@@ -37,11 +38,12 @@ protected:
 
 private:
     void rebuildFormats();
-    void highlightMarkers(const QString &text);
-    void highlightInline(const QString &text);
+    void highlightMarkers(const QString &text, const QTextCharFormat &hidden);
+    void highlightInline(const QString &text, const QTextCharFormat &hidden);
     void highlightSearch(const QString &text);
 
     bool m_darkMode = true;
+    int m_activeBlock = -1;
     QString m_customBackground;
     QString m_customForeground;
     QString m_customAccent;
@@ -50,6 +52,7 @@ private:
     QTextCharFormat m_headingFormat;
     QTextCharFormat m_boldFormat;
     QTextCharFormat m_italicFormat;
+    QTextCharFormat m_strikeFormat;
     QTextCharFormat m_codeFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;
