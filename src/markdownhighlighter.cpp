@@ -3,6 +3,9 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QtMath>
+#include <QRegularExpression>
+#include <QSet>
 #include <QTextBlock>
 #include <QTextLayout>
 
@@ -55,11 +58,33 @@ void MarkdownHighlighter::setActiveBlock(int blockNumber) {
     m_activeBlock = blockNumber;
     if (!document())
         return;
-    for (const int number : {previous, blockNumber}) {
+    QSet<int> numbers{previous, blockNumber};
+    for (auto it = m_blockRuns.cbegin(); it != m_blockRuns.cend(); ++it) {
+        for (const Run &run : it.value()) {
+            const auto inScope = [&](int n) { return n >= run.scopeFirst && n <= run.scopeLast; };
+            if (run.scopeFirst >= 0 && inScope(previous) != inScope(blockNumber)) {
+                numbers.insert(it.key());
+                break;
+            }
+        }
+    }
+    for (const int number : numbers) {
         const QTextBlock block = document()->findBlockByNumber(number);
         if (block.isValid())
             rehighlightBlock(block);
     }
+}
+
+void MarkdownHighlighter::setRowHeight(int position, qreal height) {
+    if (m_rowHeights.value(position) == height || !document())
+        return;
+    m_rowHeights.insert(position, height);
+    // Overlays report while the document is still mid-edit; restyle after it.
+    QMetaObject::invokeMethod(this, [this, position] {
+        const QTextBlock block = document()->findBlock(position);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }, Qt::QueuedConnection);
 }
 
 void MarkdownHighlighter::rebuildFormats() {
@@ -137,7 +162,8 @@ void MarkdownHighlighter::rebuildFormats() {
 //
 // md4c reports the document's visible text and the spans/blocks around it.
 // Characters it never reports as text are syntax. Spans and headings hide
-// theirs off the caret's line; list, quote, table and fence syntax stays dim.
+// theirs off the caret's line; code fences and the table delimiter row hide
+// while the caret is outside the block; list, quote and table syntax stays dim.
 
 namespace {
 
@@ -200,15 +226,42 @@ struct Parser {
     QList<Open> spans;
     QList<CodeBlock> codeBlocks;
     MarkdownHighlighter::Parsed out;
+    int scan = 0;  // first line no block has claimed yet: md4c gives "---" no offsets
 
     int lineStart(int pos) const { return text.lastIndexOf(QLatin1Char('\n'), pos - 1) + 1; }
     int lineEnd(int pos) const {
         const int end = text.indexOf(QLatin1Char('\n'), pos);
         return end < 0 ? int(text.length()) : end;
     }
+    int lineNumber(int pos) const { return int(QStringView(text).left(pos).count(QLatin1Char('\n'))); }
     void add(int start, int end, Role role) {
         if (end > start)
             out.runs.append({start, end - start, role});
+    }
+    // Hide [start, end) unless the caret is on a line from `first` to `last`.
+    void hideInScope(int start, int end, int first, int last, Role role = Role::Hide) {
+        if (end > start)
+            out.runs.append({start, end - start, role, {}, lineNumber(first), lineNumber(last)});
+    }
+    // A table row's cells as {text, pos}: split on unescaped "|", outer pipes optional.
+    QVariantList cells(int line) const {
+        int i = line, end = lineEnd(line);
+        while (i < end && text.at(i).isSpace()) ++i;
+        while (end > i && text.at(end - 1).isSpace()) --end;
+        if (i < end && text.at(i) == QLatin1Char('|')) ++i;
+        if (end > i && text.at(end - 1) == QLatin1Char('|') && (end - 2 < i || text.at(end - 2) != QLatin1Char('\\'))) --end;
+        QVariantList out;
+        for (int start = i; i <= end; ++i) {
+            if (i < end && text.at(i) == QLatin1Char('\\')) { ++i; continue; }
+            if (i < end && text.at(i) != QLatin1Char('|')) continue;
+            int first = start, last = i;
+            while (first < last && text.at(first).isSpace()) ++first;
+            while (last > first && text.at(last - 1).isSpace()) --last;
+            out.append(QVariantMap{{QStringLiteral("text"), text.mid(first, last - first)},
+                                   {QStringLiteral("pos"), first}});
+            start = i + 1;
+        }
+        return out;
     }
     // Dim the leading syntax of a line ("- ", "> ", "1. ", "[ ]", "|") up to `limit`.
     void dimPrefix(int line, int limit, QLatin1StringView chars) {
@@ -247,6 +300,7 @@ struct Parser {
         const int start = charAt[offset], end = charAt[offset + size];
         if (end <= start)
             return;
+        scan = qMax(scan, lineEnd(end) + 1);
         for (Open &o : blocks) { if (o.first < 0) o.first = start; o.end = end; }
         for (Open &o : spans) { if (o.first < 0) o.first = start; o.end = end; }
 
@@ -315,6 +369,19 @@ struct Parser {
     }
 
     void leaveBlock(const Open &b) {
+        if (b.type == MD_BLOCK_HR) {
+            static const QRegularExpression rule(QStringLiteral("^[ >]*([-*_])(?:[ \\t]*\\1){2,}[ \\t]*$"));
+            for (int line = scan; line < text.length(); line = lineEnd(line) + 1) {
+                const int end = lineEnd(line);
+                if (rule.match(text.mid(line, end - line)).hasMatch()) {
+                    out.rules.append(QVariantMap{{QStringLiteral("pos"), line}, {QStringLiteral("end"), end}});
+                    add(line, end, Role::Dim);
+                    scan = end + 1;
+                    break;
+                }
+            }
+            return;
+        }
         if (b.first < 0)
             return;
         switch (b.type) {
@@ -332,22 +399,45 @@ struct Parser {
                 const int under = lineEnd(b.end) + 1;               // setext "===" / "---"
                 if (under < text.length())
                     add(under, lineEnd(under), Role::Hide);
+                scan = qMax(scan, lineEnd(under) + 1);
             }
             break;
         }
         case MD_BLOCK_CODE:
             codeBlocks.append({b.first, b.end, b.lang});
-            if (b.level) {  // fenced: dim the fence lines around the content
-                const int open = lineStart(b.first) - 1;
-                if (open > 0) add(lineStart(open - 1 < 0 ? 0 : open), open, Role::Dim);
-                const int close = lineEnd(b.end > 0 ? b.end - 1 : 0) + 1;
-                if (close < text.length()) add(close, lineEnd(close), Role::Dim);
+            if (b.level) {  // fenced: hide the fence lines unless the caret is in the block
+                const int open = lineStart(lineStart(b.first) - 1);
+                const int close = qMin(lineEnd(b.end > 0 ? b.end - 1 : 0) + 1, int(text.length()));
+                hideInScope(open, lineStart(b.first) - 1, open, close);
+                hideInScope(close, lineEnd(close), open, close);
+                scan = qMax(scan, lineEnd(close) + 1);
             }
             break;
-        case MD_BLOCK_TABLE:
+        case MD_BLOCK_TABLE: {
             // Pipes and the delimiter row; cell text is Plain/Bold on top.
-            add(lineStart(b.first), lineEnd(b.end), Role::Dim);
+            const int start = lineStart(b.first), end = lineEnd(b.end);
+            const int delimiter = lineEnd(start) + 1;
+            add(start, end, Role::Dim);
+            hideInScope(delimiter, lineEnd(delimiter), start, end);
+            QVariantList aligns, rows;
+            for (const QVariant &cell : cells(delimiter)) {
+                const QString t = cell.toMap().value(QStringLiteral("text")).toString();
+                aligns.append(QLatin1StringView(!t.endsWith(QLatin1Char(':')) ? "left"
+                    : t.startsWith(QLatin1Char(':')) ? "center" : "right").toString());
+            }
+            // ponytail: rows run to the last line with text, trailing all-empty rows stay raw.
+            for (int line = start; line <= end; line = lineEnd(line) + 1) {
+                if (line == delimiter)
+                    continue;
+                hideInScope(line, lineEnd(line), start, end, Role::Row);
+                rows.append(QVariantMap{{QStringLiteral("pos"), line}, {QStringLiteral("end"), lineEnd(line)},
+                                            {QStringLiteral("cells"), cells(line)}});
+            }
+            out.tables.append(QVariantMap{{QStringLiteral("start"), start}, {QStringLiteral("end"), end},
+                                          {QStringLiteral("aligns"), aligns}, {QStringLiteral("rows"), rows}});
+            scan = qMax(scan, end + 1);
             break;
+        }
         case MD_BLOCK_QUOTE:
             for (int line = lineStart(b.first); line <= b.end && line < text.length(); line = lineEnd(line) + 1)
                 dimPrefix(line, lineEnd(line), QLatin1StringView(">"));
@@ -449,7 +539,7 @@ MarkdownHighlighter::Parsed MarkdownHighlighter::parse(const QString &text) {
     // over bold/links, hidden syntax last so nothing re-shows it.
     std::stable_sort(p.out.runs.begin(), p.out.runs.end(), [](const Run &a, const Run &b) {
         const auto rank = [](Role r) {
-            return r == Role::Dim ? 0 : r == Role::Done ? 2 : r == Role::Hide ? 3 : 1;
+            return r == Role::Dim ? 0 : r == Role::Done ? 2 : r == Role::Hide || r == Role::Row ? 3 : 1;
         };
         return rank(a.role) < rank(b.role);
     });
@@ -469,8 +559,12 @@ void MarkdownHighlighter::ensureParsed() {
              block.isValid() && block.position() < run.start + run.length; block = block.next()) {
             const int start = qMax(run.start, block.position());
             const int end = qMin(run.start + run.length, block.position() + block.length() - 1);
-            if (end > start)
-                byBlock[block.blockNumber()].append({start - block.position(), end - start, run.role, run.color});
+            if (end > start) {
+                Run clipped = run;
+                clipped.start = start - block.position();
+                clipped.length = end - start;
+                byBlock[block.blockNumber()].append(clipped);
+            }
         }
     }
     // An edit can restyle other blocks (opening a fence, adding "==="); the
@@ -493,9 +587,11 @@ void MarkdownHighlighter::ensureParsed() {
     QVariantList tasks;
     for (const Task &task : parsed.tasks)
         tasks.append(QVariantMap{{QStringLiteral("pos"), task.pos}, {QStringLiteral("done"), task.done}});
-    if (tasks != m_tasks) {
+    if (tasks != m_tasks || parsed.rules != m_rules || parsed.tables != m_tables) {
         m_tasks = tasks;
-        emit tasksChanged();
+        m_rules = parsed.rules;
+        m_tables = parsed.tables;
+        emit overlaysChanged();
     }
 }
 
@@ -505,7 +601,17 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
     for (const Run &run : m_blockRuns.value(currentBlock().blockNumber())) {
         QTextCharFormat style;
         switch (run.role) {
-        case Role::Hide: setFormat(run.start, run.length, active ? m_markerFormat : m_hiddenMarkerFormat); continue;
+        case Role::Hide: {
+            const bool shown = run.scopeFirst >= 0
+                ? m_activeBlock >= run.scopeFirst && m_activeBlock <= run.scopeLast : active;
+            setFormat(run.start, run.length, shown ? m_markerFormat : m_hiddenMarkerFormat);
+            continue;
+        }
+        case Role::Row:
+            // Under the table overlay: invisible, as tall as the overlay drew it.
+            if (m_activeBlock < run.scopeFirst || m_activeBlock > run.scopeLast)
+                setFormat(run.start, run.length, rowFormat(m_rowHeights.value(currentBlock().position())));
+            continue;
         case Role::Dim: case Role::Html: style = m_markerFormat; break;
         case Role::Plain: style.setForeground(m_headingFormat.foreground()); break;
         case Role::Bold: style = m_boldFormat; break;
@@ -544,6 +650,25 @@ QTextCharFormat MarkdownHighlighter::headingFormat(int level) const {
     const int basePixels = document()->defaultFont().pixelSize();
     if (basePixels > 0)
         format.setProperty(QTextFormat::FontPixelSize, qRound(basePixels * scale[level - 1]));
+    return format;
+}
+
+QTextCharFormat MarkdownHighlighter::rowFormat(qreal height) const {
+    if (height <= 0)
+        return m_hiddenMarkerFormat;  // the overlay has not measured the row yet
+    // Pick the font size whose line, with the block's line spacing, is `height`
+    // tall, and cancel its advance so the row stays one line.
+    const QTextBlockFormat block = currentBlock().blockFormat();
+    const qreal spacing = block.lineHeightType() == QTextBlockFormat::ProportionalHeight
+        ? block.lineHeight() / 100 : 1;
+    QFont font = document()->defaultFont();
+    font.setPixelSize(100);
+    const int pixels = qMax(1, qCeil(height / spacing / QFontMetricsF(font).height() * 100));
+    font.setPixelSize(pixels);
+    QTextCharFormat format = m_hiddenMarkerFormat;
+    format.clearProperty(QTextFormat::FontPointSize);
+    format.setProperty(QTextFormat::FontPixelSize, pixels);
+    format.setFontLetterSpacing(-QFontMetricsF(font).horizontalAdvance(QLatin1Char('M')));
     return format;
 }
 

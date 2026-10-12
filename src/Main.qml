@@ -750,6 +750,164 @@ ApplicationWindow {
                     }
                 }
 
+                // Rendered overlays step aside while the caret is in their
+                // source, so it can be edited as raw markdown.
+                function touches(start, end) {
+                    return cursorPosition >= start && cursorPosition <= end;
+                }
+
+                FontMetrics {
+                    id: editorMetrics
+                    font: editor.font
+                }
+
+                // "---" draws as a rule. Clicks fall through to the text below.
+                Repeater {
+                    model: backend.rules
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property rect line: {
+                            editor.width; editor.contentHeight;
+                            return editor.positionToRectangle(modelData.pos);
+                        }
+                        visible: !editor.touches(modelData.pos, modelData.end)
+                        y: line.y
+                        width: editor.width
+                        height: line.height
+                        color: win.pageColor
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width
+                            height: 1
+                            color: win.mutedColor
+                        }
+                    }
+                }
+
+                // A table draws as a grid over its raw rows. Each row reports the
+                // height its cells wrap to, and its hidden raw line takes that
+                // height (the delimiter row collapses). Clicks fall through to
+                // the raw text.
+                Repeater {
+                    model: backend.tables
+                    delegate: Rectangle {
+                        id: table
+                        required property var modelData
+                        readonly property real charWidth: editorMetrics.averageCharacterWidth
+                        readonly property real padding: Math.round(editorMetrics.height * 0.4)
+                        // Columns as wide as their longest raw cell; when that
+                        // overflows, narrow ones keep theirs and wide ones share the rest.
+                        readonly property var widths: {
+                            var natural = modelData.aligns.map(function() { return 0; });
+                            modelData.rows.forEach(function(row) {
+                                row.cells.forEach(function(cell, i) {
+                                    if (i < natural.length)
+                                        natural[i] = Math.max(natural[i], (cell.text.length + 2) * charWidth);
+                                });
+                            });
+                            var widths = natural.slice(), left = editor.width, open = natural.length;
+                            natural.map(function(w, i) { return i; })
+                                .sort(function(a, b) { return natural[a] - natural[b]; })
+                                .forEach(function(i) {
+                                    widths[i] = Math.min(natural[i], left / open);
+                                    left -= widths[i];
+                                    open--;
+                                });
+                            return widths;
+                        }
+                        readonly property real gridWidth: widths.reduce(function(sum, w) { return sum + w; }, 0)
+                        readonly property rect firstLine: {
+                            editor.width; editor.contentHeight;
+                            return editor.positionToRectangle(modelData.start);
+                        }
+                        readonly property rect lastLine: {
+                            editor.width; editor.contentHeight;
+                            return editor.positionToRectangle(modelData.end);
+                        }
+                        visible: !editor.touches(modelData.start, modelData.end)
+                        y: firstLine.y
+                        width: editor.width
+                        height: lastLine.y + lastLine.height - firstLine.y
+                        color: win.pageColor
+
+                        Repeater {
+                            model: table.modelData.rows
+                            delegate: Item {
+                                id: row
+                                required property var modelData
+                                required property int index
+                                readonly property rect first: {
+                                    editor.width; editor.contentHeight;
+                                    return editor.positionToRectangle(modelData.pos);
+                                }
+                                readonly property real needed: {
+                                    var height = editorMetrics.height;
+                                    for (var i = 0; i < cells.count; i++) {
+                                        var cell = cells.itemAt(i);
+                                        if (cell)
+                                            height = Math.max(height, cell.textHeight);
+                                    }
+                                    return Math.ceil(height + table.padding);
+                                }
+                                onNeededChanged: backend.setTableRowHeight(modelData.pos, needed)
+                                Component.onCompleted: backend.setTableRowHeight(modelData.pos, needed)
+                                y: first.y - table.firstLine.y
+                                width: table.width
+                                height: needed  // the raw line's cursor rect leaves out line spacing
+
+                                Row {
+                                    height: parent.height
+                                    Repeater {
+                                        id: cells
+                                        model: table.widths.length
+                                        delegate: Item {
+                                            required property int index
+                                            readonly property string align: table.modelData.aligns[index]
+                                            readonly property real textHeight: label.implicitHeight
+                                            width: table.widths[index]
+                                            height: row.height
+
+                                            Text {
+                                                id: label
+                                                y: table.padding / 2
+                                                width: parent.width
+                                                leftPadding: table.charWidth
+                                                rightPadding: table.charWidth
+                                                text: index < row.modelData.cells.length ? row.modelData.cells[index].text : ""
+                                                textFormat: Text.MarkdownText
+                                                wrapMode: Text.Wrap
+                                                horizontalAlignment: align === "center" ? Text.AlignHCenter
+                                                    : align === "right" ? Text.AlignRight : Text.AlignLeft
+                                                color: win.textColor
+                                                font.family: editor.font.family
+                                                font.pixelSize: editor.font.pixelSize
+                                                font.bold: row.index === 0
+                                            }
+
+                                            Rectangle {
+                                                visible: index > 0
+                                                width: 1
+                                                height: parent.height
+                                                color: win.mutedColor
+                                                opacity: 0.5
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: table.gridWidth
+                                    height: 1
+                                    color: win.mutedColor
+                                    opacity: row.index === 0 ? 1 : 0.3
+                                }
+                            }
+                        }
+                    }
+                }
+
                 function movePage(direction, extendSelection) {
                     var pageStep = Math.max(win.editorFontPixelSize,
                                             editorFlick.height - win.editorFontPixelSize * 2);

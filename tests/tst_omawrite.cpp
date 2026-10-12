@@ -72,6 +72,32 @@ private slots:
                  QStringLiteral("const1// c"));
         QVERIFY(roles(QStringLiteral("```nope\nconst a\n```\n"), R::Syntax).isEmpty());
         QCOMPARE(roles(QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n"), R::Bold), QStringLiteral("ab"));
+        QCOMPARE(roles(QStringLiteral("```js\nx\n```\n"), R::Hide), QStringLiteral("```js```"));
+        for (const auto &run : MarkdownHighlighter::parse(QStringLiteral("p\n\n```\nx\n```\n")).runs)
+            if (run.role == R::Hide) { QCOMPARE(run.scopeFirst, 2); QCOMPARE(run.scopeLast, 4); }
+
+        const auto rules = MarkdownHighlighter::parse(QStringLiteral("Title\n---\n\n* * *\n```\n---\n```\n")).rules;
+        QCOMPARE(rules.size(), 1);
+        QCOMPARE(rules.at(0).toMap().value(QStringLiteral("pos")).toInt(), 11);
+
+        const auto tables = MarkdownHighlighter::parse(
+            QStringLiteral("| a | b \\| c | d |\n|:-|-:|:-:|\n| **1** | 2 |\n")).tables;
+        QCOMPARE(tables.size(), 1);
+        const QVariantMap table = tables.at(0).toMap();
+        QCOMPARE(table.value(QStringLiteral("aligns")).toStringList(),
+                 QStringList({QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("center")}));
+        const QVariantList rows = table.value(QStringLiteral("rows")).toList();
+        QCOMPARE(rows.size(), 2);
+        const auto cellTexts = [](const QVariant &row) {
+            QStringList out;
+            for (const QVariant &cell : row.toMap().value(QStringLiteral("cells")).toList())
+                out.append(cell.toMap().value(QStringLiteral("text")).toString());
+            return out;
+        };
+        QCOMPARE(cellTexts(rows.at(0)), QStringList({QStringLiteral("a"), QStringLiteral("b \\| c"), QStringLiteral("d")}));
+        QCOMPARE(cellTexts(rows.at(1)), QStringList({QStringLiteral("**1**"), QStringLiteral("2")}));
+        QCOMPARE(roles(QStringLiteral("| a |\n|---|\n| 1 |\n"), R::Hide), QStringLiteral("|---|"));
+        QCOMPARE(roles(QStringLiteral("| a |\n|---|\n| 1 |\n"), R::Row), QStringLiteral("| a || 1 |"));
 
         const auto parsed = MarkdownHighlighter::parse(QStringLiteral("- [ ] open\n- [x] done **b**\n"));
         QCOMPARE(parsed.tasks.size(), 2);

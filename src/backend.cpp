@@ -9,6 +9,7 @@
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QMimeData>
+#include <QPalette>
 #include <QProcess>
 #include <QPrintDialog>
 #include <QPrinter>
@@ -181,7 +182,7 @@ void Backend::attachDocument(QObject *textDocument) {
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setDarkMode(m_darkMode);
     m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
-    connect(m_highlighter, &MarkdownHighlighter::tasksChanged, this, &Backend::taskBoxesChanged);
+    connect(m_highlighter, &MarkdownHighlighter::overlaysChanged, this, &Backend::overlaysChanged);
 
     connect(m_document, &QTextDocument::contentsChange, this,
             [this](int position, int, int charsAdded) {
@@ -376,8 +377,21 @@ void Backend::setCursorPosition(int position) {
         m_highlighter->setActiveBlock(m_document->findBlock(position).blockNumber());
 }
 
+void Backend::setTableRowHeight(int position, qreal height) {
+    if (m_highlighter)
+        m_highlighter->setRowHeight(position, height);
+}
+
 QVariantList Backend::taskBoxes() const {
     return m_highlighter ? m_highlighter->tasks() : QVariantList();
+}
+
+QVariantList Backend::rules() const {
+    return m_highlighter ? m_highlighter->rules() : QVariantList();
+}
+
+QVariantList Backend::tables() const {
+    return m_highlighter ? m_highlighter->tables() : QVariantList();
 }
 
 void Backend::setSearchHighlight(const QString &query, int currentMatchStart) {
@@ -630,6 +644,12 @@ void Backend::loadOmarchyTheme() {
         m_highlighter->setDarkMode(m_darkMode);
         m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
     }
+
+    // QML markdown text (table cells) takes link colors from the app palette.
+    // ponytail: cells already shown keep the old color until their table is edited.
+    QPalette palette = QGuiApplication::palette();
+    palette.setColor(QPalette::Link, QColor(m_themeAccent));
+    QGuiApplication::setPalette(palette);
 
     emit themeColorsChanged();
 }
