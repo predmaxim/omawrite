@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
@@ -25,10 +26,10 @@ ApplicationWindow {
     // `omarchy display text size` drives) anchored so its 12px default leaves
     // the app at the sizes it was designed around.
     readonly property real textScale: backend.textScale
-    readonly property int editorFontPixelSize: scaledSize(20)
+    readonly property int editorFontPixelSize: Math.round(scaledSize(20) * editorZoom.factor)
     readonly property int editorWidth: Math.min(
-        Math.round(writerFontMetrics.averageCharacterWidth * 65),
-        Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)))
+        Math.round(writerFontMetrics.averageCharacterWidth * 100),
+        Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 10)))
     property bool closeConfirmed: false
     property bool searchOpen: false
     property bool searchUpdating: false
@@ -78,6 +79,58 @@ ApplicationWindow {
         id: writerFontMetrics
         font.family: "iA Writer Mono S"
         font.pixelSize: win.editorFontPixelSize
+    }
+
+    // Ctrl+plus/minus/0 and Ctrl+wheel zoom the editor text, remembered across runs.
+    Settings {
+        id: editorZoom
+        category: "editor"
+        property real factor: 1
+
+        function zoomBy(steps) {
+            zoomTo(factor + steps * 0.1);
+        }
+
+        // Keep the text at the top of the view in place: fonts relayout at
+        // once, headings and table rows restyle a moment later.
+        function zoomTo(value) {
+            zoomPin.anchor = editor.positionAt(0, editorFlick.contentY - editor.y);
+            zoomPin.offset = editor.positionToRectangle(zoomPin.anchor).y + editor.y - editorFlick.contentY;
+            zoomPin.restart();
+            factor = Math.max(0.5, Math.min(3, Math.round(value * 10) / 10));
+            pin();
+        }
+
+        function pin() {
+            if (zoomPin.running)
+                editorFlick.scrollTo(editorFlick.clampContentY(
+                    editor.positionToRectangle(zoomPin.anchor).y + editor.y - zoomPin.offset));
+        }
+    }
+
+    Timer {
+        id: zoomPin
+        interval: 300
+        property int anchor: 0
+        property real offset: 0
+    }
+
+    Shortcut {
+        sequences: [StandardKey.ZoomIn, "Ctrl+="]
+        context: Qt.ApplicationShortcut
+        onActivated: editorZoom.zoomBy(1)
+    }
+
+    Shortcut {
+        sequences: [StandardKey.ZoomOut]
+        context: Qt.ApplicationShortcut
+        onActivated: editorZoom.zoomBy(-1)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+0"
+        context: Qt.ApplicationShortcut
+        onActivated: editorZoom.zoomTo(1)
     }
 
     // Every hardcoded size in the interface is expressed at text scale 1.
@@ -337,7 +390,7 @@ ApplicationWindow {
         standardButtons: Dialog.Close
         anchors.centerIn: parent
         contentItem: Label {
-            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
+            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl+Enter  Toggle Task\nCtrl+= / Ctrl+-  Zoom Text\nCtrl+0  Reset Zoom\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
             lineHeight: 1.5
         }
     }
@@ -468,7 +521,17 @@ ApplicationWindow {
                 // wheel notches arrive with only angleDelta set, while
                 // finger scrolling carries pixel-precise pixelDelta.
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                property real zoomRest: 0  // part of a Ctrl+wheel notch not yet applied
                 onWheel: function(wheel) {
+                    if (wheel.modifiers & Qt.ControlModifier) {
+                        zoomRest += wheel.angleDelta.y / 120;
+                        var steps = Math.trunc(zoomRest);
+                        zoomRest -= steps;
+                        if (steps !== 0)
+                            editorZoom.zoomBy(steps);
+                        wheel.accepted = true;
+                        return;
+                    }
                     scrollLinger.restart();
                     if (wheel.pixelDelta.y !== 0)
                         editorFlick.scrollTo(editorFlick.clampContentY(editorFlick.contentY - wheel.pixelDelta.y));
@@ -564,8 +627,10 @@ ApplicationWindow {
                     width: 1
                     color: win.strongTextColor
                 }
-                onCursorRectangleChanged: editorFlick.ensureCursorVisible()
+                onCursorRectangleChanged: if (!zoomPin.running) editorFlick.ensureCursorVisible()
+                onContentHeightChanged: editorZoom.pin()
                 onCursorPositionChanged: backend.setCursorPosition(cursorPosition)
+                onFontChanged: backend.rehighlight()
 
                 function replaceSelectionWith(replacement) {
                     var start = Math.min(selectionStart, selectionEnd);

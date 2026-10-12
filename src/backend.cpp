@@ -377,6 +377,11 @@ void Backend::setCursorPosition(int position) {
         m_highlighter->setActiveBlock(m_document->findBlock(position).blockNumber());
 }
 
+void Backend::rehighlight() {
+    if (m_highlighter)
+        QMetaObject::invokeMethod(m_highlighter.data(), &MarkdownHighlighter::rehighlight, Qt::QueuedConnection);
+}
+
 void Backend::setTableRowHeight(int position, qreal height) {
     if (m_highlighter)
         m_highlighter->setRowHeight(position, height);

@@ -74,6 +74,8 @@ public:
     Q_INVOKABLE bool editorTextChanged();
     Q_INVOKABLE void setCursorPosition(int position);
     Q_INVOKABLE void setTableRowHeight(int position, qreal height);
+    // Restyle after an editor font change: heading sizes are absolute pixels.
+    Q_INVOKABLE void rehighlight();
     QVariantList taskBoxes() const;
     QVariantList rules() const;
     QVariantList tables() const;
